@@ -1,0 +1,20 @@
+Päivitetty 17/10/2018
+
+Ilmanpaine 
+  ->korkeus meren pinnasta/vaihtelut korkeudesta(on hyvin herkkä)
+  ->Tunnistetaan yläspäin/alaspäin oleva liike
+
+Valoisuus mittari
+  ->Tunnistetaan onko laite taskussa
+
+Grafiikka näyttö
+  =Näytä akun varaus?
+  =Lämpötila
+  =Tämän hetkinen liike(Ylös/Alas) ja liikkeen muoto(hissi/portaat)
+  =Kello
+  
+Tekoäly
+  =Käytännössä tarkistaa onko arvot jonkinlaisen alueen/kynnysarvojen sisällä
+  =Voisi käyttää keski-arvo taulukkoa, jossa kun kynnysarvo on ylitetty, laite siirtyy tilasta A -> B ja 
+    muuttuu takaisin kun on "tarpeeksi erillainen arvo kynnys arvoista"
+  
