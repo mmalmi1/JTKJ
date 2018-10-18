@@ -23,6 +23,12 @@
 #include "sensors/mpu9250.h"
 #include "sensors/bmp280.h"
 
+//Include omat
+#include <math.h>
+#include "Koodia/testdata1.h"
+#include "Koodia/testdata2.h" 
+#include "Koodia/testdata3.h" 
+
 /* JTKJ Header files */
 #include "wireless/comm_lib.h"
 
@@ -30,6 +36,7 @@
 #define STACKSIZE 2048
 Char labTaskStack[STACKSIZE];
 Char commTaskStack[STACKSIZE];
+float datalista[10][6] = {}; //OMA GLOBAALI
 
 /* JTKJ: Display */
 Display_Handle hDisplay;
@@ -75,6 +82,64 @@ PIN_Config cLed[] = {
     Board_LED0 | PIN_GPIO_OUTPUT_EN | PIN_GPIO_LOW | PIN_PUSHPULL | PIN_DRVSTR_MAX, // JTKJ: CONFIGURE LEDS AS OUTPUT (SEE LECTURE MATERIAL)
     PIN_TERMINATE
 };
+
+//OMAT FUNKTIOT
+void sensori_main(lista);
+float keskiarvo(float data[][6], int indeksi);
+void datankerays();
+
+void sensori_main(float data[][6]) {
+    int j;
+    datankerays();
+    for (j=0; j<6; j++) {
+        keskiarvo(datalista, j);
+    }
+}
+
+float keskiarvo(float data[][6], int indeksi) {
+    int i;
+    int j;
+    char tulostus[200];
+    float summa = 0;
+    float var_summa = 0;
+    float varianssi = 0;
+    int n = 0;
+    
+    for (i=0; i<10; i++) {
+        summa += data[i][indeksi];
+        n += 1;
+    }
+    summa = summa / n;
+    
+    for (j=0; j<n+1; j++) {
+        var_summa += pow((data[j][indeksi] - summa), 2);
+    }
+    varianssi = var_summa / (n - 1);    
+    sprintf(tulostus,"Keskiarvo on: %.4f \nVarianssi on: %.4f \n\n", summa, varianssi);
+    System_printf(tulostus);
+	System_flush();
+    
+    return 0;
+}
+
+void datankerays() {
+    I2C_Handle i2cMPU; // INTERFACE FOR MPU9250 SENSOR
+	I2C_Params i2cMPUParams;
+	float ax, ay, az, gx, gy, gz;
+    int i;
+	for (i=0; i<10; i++) {
+        mpu9250_get_data(&i2cMPU, &ax, &ay, &az, &gx, &gy, &gz);
+        datalista[i][0] = ax;
+        datalista[i][1] = ay;
+        datalista[i][2] = az;
+        datalista[i][3] = gx;
+        datalista[i][4] = gy;
+        datalista[i][5] = gz;
+        Task_sleep(1 * 100000/Clock_tickPeriod);
+        
+    }
+}
+
 
 /* JTKJ: Handle for power button */
 void powerButtonFxn(PIN_Handle handle, PIN_Id pinId) {
@@ -139,8 +204,6 @@ Void labTask(UArg arg0, UArg arg1) {
     
     double temperature;
     double pressure;
-    float ax, ay, az, gx, gy, gz;
-    char tulostettava[50];
 
     //jtkj: Create I2C for usage 
     I2C_Params_init(&i2cParams);
@@ -245,16 +308,16 @@ Void labTask(UArg arg0, UArg arg1) {
         I2C_close(i2c);
         */
         
-	    mpu9250_get_data(&i2cMPU, &ax, &ay, &az, &gx, &gy, &gz);
-	    sprintf(tulostettava,"Kiih X: %.1f Y: %.1f Z: %.1f \n Gyro X: %.1f Y: %.1f Z: %.1f \n", ax, ay, az, gx, gy, gz);
-	    
-    	System_printf(tulostettava);
+	    sensori_main(datalista);
+    	//sensori_main();
+    	//sprintf(tulostettava,"Kiih X: %.1f Y: %.1f Z: %.1f \n Gyro X: %.1f Y: %.1f Z: %.1f \n", ax, ay, az, gx, gy, gz);
+	    //System_printf(tulostettava);
     	System_flush();
         
         // I2C_close(i2cMPU);
         
     	// JTKJ: Do not remove sleep-call from here!
-    	Task_sleep(1000000 / Clock_tickPeriod);
+    	Task_sleep(3000000 / Clock_tickPeriod);
     	// Display_clear(hDisplay);
     }
     PIN_setOutputValue(hMpuPin,Board_MPU_POWER, Board_MPU_POWER_OFF);
