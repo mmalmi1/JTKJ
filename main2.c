@@ -1,6 +1,7 @@
 /*
  *  ======== main.c ========
  */
+
 /* XDCtools Header files */
 #include <xdc/std.h>
 #include <xdc/runtime/System.h>
@@ -41,13 +42,14 @@ Char commTaskStack[STACKSIZE];
 float datalista[60][6] = {}; 
 float summat[6];
 float varianssit[6];
-enum state { idle=0, lampotila=1, viesti=2, mittaus=3, lampotila_mittaus=4, lue_viesti=5 };
+enum state { idle=0, lampotila=1, viesti=2, exit=3, mittaus=4, lampotila_mittaus=5, lue_viesti=6, exit_state1=7, exit_state2=8 };
 enum state mystate = idle;
 double pressure;
 double temperature;
 int viesti_tila = 0;
-int vast_viesti = 0;
-char payload1[16];
+char payload1[16] = "e";
+int last_drawn; //Viimeksi piirrettyn grafiikan "id"/tunniste
+int viesti_vastaanotto = 0;
 
 /* JTKJ: Display */
 Display_Handle hDisplay;
@@ -99,6 +101,12 @@ void sensori_main(lista);
 
 float keskiarvo(float data[][6], int indeksi);
 
+void grafiikka_piirto(graphics_id);
+
+void animated_graphics(graphic_id);
+
+void tyhjenna_naytto();
+
 void datankerays();
 
 void paattely();
@@ -111,42 +119,53 @@ void clkFxn(UArg arg0);
 void powerButtonFxn(PIN_Handle handle, PIN_Id pinId) {
     // Vaihdetaan led-pinnin tilaa negaatiolla
     PIN_setOutputValue( hLed, Board_LED0, !PIN_getOutputValue( Board_LED0 ) );
-    
-   //Tilojen vaihto alemmasta napista
+     
+   // Tilojen vaihto alemmasta napista menussa
    	if (mystate == 0) {
    	    mystate = 1;
    	} else if (mystate == 1) {
    	    mystate = 2;
    	} else if (mystate == 2) {
-        mystate = 0;
-   	} 
+        mystate = 3;
+   	} else if (mystate == 3) {
+   	    mystate = 0;
+   	} else if (mystate == 7) {
+   	    mystate = 8;
+   	} else if (mystate == 8) {
+   	    mystate = 7;
+   	}
 }
 
 /* JTKJ: WRITE HERE YOUR HANDLER FOR BUTTON0 PRESS */
 void buttonFxn(PIN_Handle handle, PIN_Id pinId) {
-    //Virran sammutus jos idle tai mittaus    
+    // Vaihtaa tilan idlesta mittaukseen
     if (mystate == 0) {
-        mystate = 3;
-    }
-    /*if ((mystate == 0) || (mystate == 3)) {
+        mystate = 4;
+    } else if (mystate == 1) {
+   	    // Tilan vaihto menussa Lämpötila -> Lämpötila nayttö
+        mystate = 5;
+        // Vaihdetaan led-pinnin tilaa negaatiolla
+        PIN_setOutputValue( hLed, Board_LED0, !PIN_getOutputValue( Board_LED0 ) );
+        
+    } else if (mystate == 2) {
+        // Tilan vaihto menussa Viestit -> Viestin nayttö
+        mystate = 6;
+        
+    } else if (mystate == 3) {
+        // Tilan vaihto, EXIT -> Exit vaihtoehdot
+        mystate = 7;
+    
+    } else if (mystate == 7) {
         Display_clear(hDisplay);
-        Display_close(hDisplay);
         Task_sleep(100000 / Clock_tickPeriod);
 
 	    PIN_close(hPowerButton);
 
         PINCC26XX_setWakeup(cPowerWake);
 	    Power_shutdown(NULL,0);
-   	}*/
-   	else if (mystate == 1) {
-        mystate = 4;
-        // Vaihdetaan led-pinnin tilaa negaatiolla
-        PIN_setOutputValue( hLed, Board_LED0, !PIN_getOutputValue( Board_LED0 ) );
-    } 
-    else if (mystate == 2) {
-        mystate = 5;
-    }
-    else if (mystate == 3) {
+
+    } else if (mystate == 8) {
+        // Palauttaa tilan takaisin menuun
         mystate = 0;
     }
 }
@@ -168,8 +187,6 @@ Void commTask(UArg arg0, UArg arg1) {
     while (1) {
 
         if (viesti_tila == 1) {
-            /*sprintf(payload,"numero %x", IEEE80154_MY_ADDR);
-            Send6LoWPAN(IEEE80154_SERVER_ADDR, payload, strlen(payload));*/
             sprintf(payload,"11 Meni portaita");
             Send6LoWPAN(IEEE80154_SERVER_ADDR, payload, strlen(payload));
             System_printf("Viesti lahetetty\n");
@@ -191,11 +208,12 @@ Void commTask(UArg arg0, UArg arg1) {
             memset(payload1,0,16);
             // Luetaan viesti puskuriin payload
             Receive6LoWPAN(&senderAddr, payload1, 16);
-            // Tulostetaan vastaanotettu viesti konsoli-ikkunaan
-            /*System_printf(payload1);
+            viesti_vastaanotto = 1;
+            
+            //Tulostetaan vastaanotettu viesti konsoli-ikkunaan
+            System_printf(payload1);
             System_printf("\n");
-            System_flush();*/
-            //if payload1
+            System_flush();
         }
 }
         // DO __NOT__ PUT YOUR SEND MESSAGE FUNCTION CALL HERE!! 
@@ -267,7 +285,23 @@ Void labTask(UArg arg0, UArg arg1) {
         System_abort("Naytto ei toimi");
     }
     Display_clear(hDisplay);
+    
+    //
+    if (hDisplay) {
+      
+       // Grafiikkaa varten tarvitsemme lisää RTOS:n muuttujia
+      tContext *pContext = DisplayExt_getGrlibContext(hDisplay);
 
+      if (pContext) {
+        // Latausruudun aloitus grafiikka
+        grafiikka_piirto(1);
+         // Piirto puskurista näytölle
+         GrFlush(pContext);
+        }
+    }
+
+    Task_sleep(3000000 / Clock_tickPeriod); //3s tauko
+    
     char str[50];
     sprintf(str,"%4x", IEEE80154_MY_ADDR);
     Display_print0(hDisplay, 5, 5, str); 
@@ -286,28 +320,33 @@ Void labTask(UArg arg0, UArg arg1) {
 
         switch (mystate) {
             case 0:
-                // MENU 0
+                // MENU 0 , Valikko kohta "Mittaustila"
                 update_screen();
                 break;
 
             case 1:
-                //MENU 1
+                //MENU 1, Valikko kohta "Lampotila"
                 update_screen();
                 break;
                 
             case 2:
-                //MENU 2
+                //MENU 2, Valikko kohta "Viestit"
                 update_screen();
                 break;
                 
             case 3:
+                //MENU 3, Valikko kohta "EXIT"
+                update_screen();
+                break;
+                
+            case 4:
                 //MITTAUSTILA
                 update_screen();
                 sensori_main(datalista); 
                 mystate = 0;
                 break;
             
-            case 4:
+            case 5:
                 //LAMPÖTILA MITTAUS
                 Display_clear(hDisplay);
                 I2C_close(i2cMPU); // Close MPU for BMP
@@ -316,7 +355,6 @@ Void labTask(UArg arg0, UArg arg1) {
         	    if (i2c == NULL) {
         	        System_abort("Error Initializing I2C\n");
         	    }
-            	
             	bmp280_get_data(&i2c, &pressure, &temperature);
                 
                 I2C_close(i2c); //Close BMP for MPU
@@ -327,22 +365,29 @@ Void labTask(UArg arg0, UArg arg1) {
 	            }
 	            
 	            update_screen();
-	            Task_sleep(3000000 / Clock_tickPeriod); //Näytetään lämpötila 3s
+	            Task_sleep(4000000 / Clock_tickPeriod); //Näytetään lämpötila 4s
 	            Display_clear(hDisplay);
 	            mystate = 1;
                 break;
             
-            case 5:
+            case 6:
                 //viestin luku
                 update_screen();
-                Task_sleep(3000000 / Clock_tickPeriod); //näytetään 3s
+                Task_sleep(4000000 / Clock_tickPeriod); //näytetään 4s
                 Display_clear(hDisplay); 
                 mystate = 2;
+                
+            case 7:
+                //exit Menu, "KYLLÄ" vaihtoehto
+                update_screen();
+                break;
+                
+            case 8:
+                //exit Menu, "EI" vaihtoehto
+                update_screen();
+                break;
         }
         
-    	System_flush();
-        
-        // I2C_close(i2cMPU);
         
     	// JTKJ: Do not remove sleep-call from here!
     	Task_sleep(400000 / Clock_tickPeriod);
@@ -366,7 +411,7 @@ Int main(void) {
     // Initialize board
     Board_initGeneral();
     Board_initI2C();
-
+    
 	// Initialize clock
 	Clock_Params_init(&clkParams);
     clkParams.period = 7000000 / Clock_tickPeriod; 
@@ -376,7 +421,7 @@ Int main(void) {
     if (clkHandle == NULL) {
        System_abort("Clock creat failed");
     }
-	
+    
 	/* JTKJ: Power Button */
 	hPowerButton = PIN_open(&sPowerButton, cPowerButton);
 	if(!hPowerButton) {
@@ -443,7 +488,153 @@ Int main(void) {
 
 //OMAT FUNKTIOT
 
-void sensori_main(lista) {
+void grafiikka_piirto(graphics_id) { // Piirtaa tarvittavan grafiikan, jos kyseista grafiikkaa ei ole piirretty viime kerralla.
+    tContext *pContext = DisplayExt_getGrlibContext(hDisplay);
+    if (graphics_id != last_drawn) {
+        if (graphics_id == 1) { // Load screen graphic [1]
+            GrLineDraw(pContext,0,4,54,4);
+            GrLineDraw(pContext,54,4,60,1);
+            GrLineDraw(pContext,60,1,96,1);
+            GrLineDraw(pContext,0,92,91,92);
+            GrLineDraw(pContext,91,92,96,87); 
+            
+        } else if (graphics_id == 2) { // Idle/mittaus Screen graphic [2]
+            GrLineDraw(pContext,0,4,54,4);
+            GrLineDraw(pContext,54,4,60,1);
+            GrLineDraw(pContext,60,1,96,1);
+            GrLineDraw(pContext,0,92,91,92);
+            GrLineDraw(pContext,91,92,96,87); 
+
+        } else if (graphics_id == 3) { // Non-idle Screen graphic [3]
+            GrLineDraw(pContext,0,4,54,4);
+            GrLineDraw(pContext,54,4,60,1);
+            GrLineDraw(pContext,60,1,96,1);
+            GrLineDraw(pContext,0,92,91,92);
+            GrLineDraw(pContext,91,92,96,87); 
+        } else if (graphics_id == 4) { // EXIT menu graphic [4]
+            GrLineDraw(pContext,0,4,54,4);
+            GrLineDraw(pContext,54,4,60,1);
+            GrLineDraw(pContext,60,1,96,1);
+            GrLineDraw(pContext,0,92,91,92);
+            GrLineDraw(pContext,91,92,96,87); 
+        } 
+        last_drawn = graphics_id;
+        GrFlush(pContext);
+    }
+}
+void tyhjenna_naytto() { // Tyhjentaa aiemman tekstin naytosta, mutta ei tausta grafiikkaa
+    Display_print0(hDisplay, 6, 1, " ");
+    Display_print0(hDisplay, 7, 1, " ");
+    Display_print0(hDisplay, 8, 1, " ");
+    Display_print0(hDisplay, 9, 1, " ");
+    Display_print0(hDisplay, 10, 1, " ");
+}
+
+void animated_graphics(graphic_id) { // Hoitaa animoidun tekstin tulostuksen
+    tContext *pContext = DisplayExt_getGrlibContext(hDisplay);
+    if (graphic_id == 1) {
+        
+        int x = 44;
+        int y = 64;
+        int i;
+        
+        for (i=0; i<8; i++) {
+        y = y + 1;
+        tyhjenna_naytto(); 
+        
+        Display_print0(hDisplay, 3, 0, "KULJIT HISSILLA");
+        Display_print0(hDisplay, 5, 7, ":(");
+
+        // Tikku-ukko 0
+        GrLineDraw(pContext,3+x,0+y,4+x,1+y);
+        GrLineDraw(pContext,4+x,2+y,3+x,2+y);
+        GrLineDraw(pContext,2+x,1+y,2+x,2+y);
+        GrLineDraw(pContext,3+x,3+y,3+x,8+y);
+        GrLineDraw(pContext,2+x,4+y,4+x,4+y);
+        GrLineDraw(pContext,1+x,5+y,1+x,6+y);
+        GrLineDraw(pContext,5+x,5+y,5+x,6+y);
+        GrLineDraw(pContext,4+x,8+y,4+x,10+y);
+        GrLineDraw(pContext,2+x,8+y,2+x,10+y); 
+        GrLineDraw(pContext,1+x,11+y,2+x,11+y); 
+        GrLineDraw(pContext,4+x,11+y,5+x,11+y); 
+ 
+        //Hissi osio
+        GrLineDraw(pContext,-2+x,-2+y,8+x,-2+y); 
+        GrLineDraw(pContext,-2+x,-2+y,-2+x,-1+y); 
+        GrLineDraw(pContext,8+x,-2+y,8+x,-1+y); 
+        
+        GrLineDraw(pContext,-2+x,13+y,8+x,13+y); 
+        GrLineDraw(pContext,-2+x,13+y,-2+x,12+y); 
+        GrLineDraw(pContext,8+x,12+y,8+x,12+y); 
+        
+        GrFlush(pContext);
+        Task_sleep(1 * 500000/Clock_tickPeriod); // Animaation frame toistonopeus 0,5s = 2fps
+        }
+    } else if (graphic_id == 2) {
+        int x = 44;
+        int y = 64;
+        int i;
+        int o;
+        
+        for (o=0; o<8; o++) {
+        if (o % 2 == 0) {
+            i = 0;
+        } else {
+            i = 1;
+        }
+        
+        tyhjenna_naytto();
+        Display_print0(hDisplay, 3, 0, "KULJIT PORTAITA");
+        Display_print0(hDisplay, 5, 7, ":)");
+
+        if (i == 0) {
+            // Tikku-ukko 1
+            GrLineDraw(pContext,6+x,-4+y,4+x,-4+y);
+            GrLineDraw(pContext,5+x,-3+y,5+x,-2+y);
+            GrLineDraw(pContext,6+x,-3+y,7+x,-2+y);
+            GrLineDraw(pContext,6+x,-2+y,6+x,3+y);
+            GrLineDraw(pContext,4+x,1+y,4+x,2+y);
+            GrLineDraw(pContext,4+x,0+y,5+x,0+y); 
+            GrLineDraw(pContext,7+x,0+y,8+x,-1+y); 
+            GrLineDraw(pContext,9+x,-3+y,9+x,-2+y); 
+            GrLineDraw(pContext,5+x,3+y,5+x,5+y);
+            GrLineDraw(pContext,4+x,5+y,4+x,6+y); 
+            GrLineDraw(pContext,3+x,6+y,3+x,7+y);
+            GrLineDraw(pContext,7+x,3+y,9+x,5+y); 
+            GrLineDraw(pContext,7+x,4+y,8+x,5+y); 
+            
+        } else if (i = 1) {
+            //Tikku-ukko 2
+            GrLineDraw(pContext,4+x,-1+y,2+x,0+y);
+            GrLineDraw(pContext,5+x,-1+y,3+x,1+y);
+            GrLineDraw(pContext,5+x,1+y,4+x,2+y);
+            GrLineDraw(pContext,1+x,3+y,7+x,3+y);
+            GrLineDraw(pContext,4+x,4+y,4+x,6+y);
+            GrLineDraw(pContext,3+x,7+y,3+x,8+y);
+            GrLineDraw(pContext,2+x,8+y,2+x,9+y);
+            GrLineDraw(pContext,1+x,9+y,1+x,10+y);
+            GrLineDraw(pContext,5+x,7+y,5+x,8+y); 
+            GrLineDraw(pContext,5+x,9+y,6+x,9+y); 
+        }
+         
+        GrLineDraw(pContext,-1+x,14+y,11+x,2+y); 
+        // Portaat
+        GrLineDraw(pContext,0+x,12+y,0+x,14+y); 
+        GrLineDraw(pContext,2+x,10+y,2+x,12+y); 
+        GrLineDraw(pContext,4+x,8+y,4+x,10+y); 
+        GrLineDraw(pContext,6+x,6+y,6+x,8+y); 
+        GrLineDraw(pContext,8+x,4+y,8+x,6+y); 
+        GrLineDraw(pContext,10+x,2+y,10+x,4+y); 
+        GrLineDraw(pContext,12+x,0+y,12+x,2+y);
+        
+        GrFlush(pContext);
+        Task_sleep(1 * 500000/Clock_tickPeriod); // Animaation frame toistonopeus 0,5s = 2fps
+        
+        }
+    }
+}
+
+void sensori_main(lista) { // Liikkumisen tunnistuksen pääfunktio
     int j;
     char tulostus[50];
     char tulostus2[50];
@@ -464,7 +655,7 @@ void sensori_main(lista) {
     paattely();
 }
 
-float keskiarvo(float data[][6], int indeksi) {
+float keskiarvo(float data[][6], int indeksi) { // Laskee keskiarvoja ja variansseja päättely-funktiota varten
     int i;
     int j;
     float summa = 0;
@@ -477,19 +668,18 @@ float keskiarvo(float data[][6], int indeksi) {
         n += 1;
     }
     summa = summa / n;
-    
+   
     for (j=0; j<n+1; j++) {
         var_summa += pow((data[j][indeksi] - summa), 2);
     }
     varianssi = var_summa / (n - 1);    
-    
     summat[indeksi] = summa; //SIJOITUKSET GLOBAALEIHIN
     varianssit[indeksi] = varianssi;  
     
     return 0;
 }
 
-void datankerays() {
+void datankerays() { // Kerää dataa sensorilta, tallentaa listaan käytettäväksi
     I2C_Handle i2cMPU; // INTERFACE FOR MPU9250 SENSOR
 	I2C_Params i2cMPUParams;
 	float ax, ay, az, gx, gy, gz;
@@ -503,19 +693,14 @@ void datankerays() {
         datalista[i][3] = gx;
         datalista[i][4] = gy;
         datalista[i][5] = gz;
-        /*sprintf(tulostus3,"%f\n", datalista[i][2]);
-        System_printf(tulostus3);
-        System_flush();*/
-	    
         Task_sleep(1 * 100000/Clock_tickPeriod); //Datan keräys 0.1s välein
     }
 }
 
 
-void paattely() {
+void paattely() { // Päättelee ollaanko portaissa vai hississä
     int e;
     if (varianssit[2] > 0.05) {
-        //Portaissa tai kävely
         System_printf("Portaissa \n");
 	    System_printf("Viestitila muutettu 1\n");
 	    System_flush();
@@ -523,7 +708,9 @@ void paattely() {
 	    Display_clear(hDisplay);
 	    Display_print0(hDisplay, 3, 0, "KULJIT PORTAITA");
         Display_print0(hDisplay, 5, 7, ":)");
-        Task_sleep(1 * 3000000/Clock_tickPeriod);
+        grafiikka_piirto(3);
+        animated_graphics(2);
+        Task_sleep(1 * 1000000/Clock_tickPeriod);
 	    Display_clear(hDisplay);
     }
     for (e=0; e<60; e++) {
@@ -535,8 +722,11 @@ void paattely() {
 	        Display_clear(hDisplay);
 	        Display_print0(hDisplay, 3, 0, "KULJIT HISSILLA");
             Display_print0(hDisplay, 5, 7, ":(");
-	        Task_sleep(1 * 3000000/Clock_tickPeriod);
+            grafiikka_piirto(3);
+            animated_graphics(1);
+	        Task_sleep(1 * 1000000/Clock_tickPeriod);
 	        Display_clear(hDisplay);
+	        
 	        break;
         }
         else if ((varianssit[2] < 0.05) && (datalista[e][2] > -0.85)) {
@@ -547,7 +737,9 @@ void paattely() {
 	        Display_clear(hDisplay);
 	        Display_print0(hDisplay, 3, 0, "KULJIT HISSILLA");
             Display_print0(hDisplay, 5, 7, ":(");
-	        Task_sleep(1 * 3000000/Clock_tickPeriod);
+            grafiikka_piirto(3);
+            animated_graphics(1);
+	        Task_sleep(1 * 1000000/Clock_tickPeriod);
 	        Display_clear(hDisplay);
 	        break;
         }
@@ -555,55 +747,48 @@ void paattely() {
 }
     
 
-
-// Taskifunktio
-Void displayFxn(UArg arg0, UArg arg1) {
-
-   Display_Params params;
-   Display_Params_init(&params);
-   params.lineClearMode = DISPLAY_CLEAR_BOTH;
-
-   Display_Handle hDisplayLcd = Display_open(Display_Type_LCD, &params);
-
-   if (hDisplayLcd) {
-      
-       // Grafiikkaa varten tarvitsemme lisää RTOS:n muuttujia
-      tContext *pContext = DisplayExt_getGrlibContext(hDisplayLcd);
-
-      if (pContext) {
-
-         // Piirretään puskuriin kaksi linjaa näytön poikki x:n muotoon
-         GrLineDraw(pContext,0,0,96,96);
-         GrLineDraw(pContext,0,96,96,0);
-
-         // Piirto puskurista näytölle
-         GrFlush(pContext);
-      }
-   }
-}
-
-void update_screen() {
+void update_screen() { // Paivittaa nayton
     if (mystate == 0) {
+        grafiikka_piirto(2);
         Display_print0(hDisplay, 1, 1, "Idle");
         Display_print0(hDisplay, 3, 1, "o MITTAUSTILA");
         Display_print0(hDisplay, 5, 3, "LAMPOTILA");
         Display_print0(hDisplay, 7, 3, "VIESTIT");
+        Display_print0(hDisplay, 9, 3, "EXIT");
+        
     } else if (mystate == 1) {
+        grafiikka_piirto(2);
         Display_print0(hDisplay, 1, 1, "Idle");
         Display_print0(hDisplay, 3, 3, "MITTAUSTILA");
         Display_print0(hDisplay, 5, 1, "o LAMPOTILA");
         Display_print0(hDisplay, 7, 3, "VIESTIT");
+        Display_print0(hDisplay, 9, 3, "EXIT");
+        
     } else if (mystate == 2) {
+        grafiikka_piirto(2);        
         Display_print0(hDisplay, 1, 1, "Idle");
         Display_print0(hDisplay, 3, 3, "MITTAUSTILA");
         Display_print0(hDisplay, 5, 3, "LAMPOTILA");
         Display_print0(hDisplay, 7, 1, "o VIESTIT");
+        Display_print0(hDisplay, 9, 3, "EXIT");
+        
     } else if (mystate == 3) {
-        Display_print0(hDisplay, 1, 1, "Mittaa...");
+        grafiikka_piirto(2);        
+        Display_print0(hDisplay, 1, 1, "Idle");
         Display_print0(hDisplay, 3, 3, "MITTAUSTILA");
         Display_print0(hDisplay, 5, 3, "LAMPOTILA");
         Display_print0(hDisplay, 7, 3, "VIESTIT");
-    }else if (mystate == 4) {
+        Display_print0(hDisplay, 9, 1, "o EXIT");
+        
+    } else if (mystate == 4) {
+        grafiikka_piirto(2);
+        Display_print0(hDisplay, 1, 1, "Mittaa..."); 
+        Display_print0(hDisplay, 3, 3, "MITTAUSTILA");
+        Display_print0(hDisplay, 5, 3, "LAMPOTILA");
+        Display_print0(hDisplay, 7, 3, "VIESTIT");
+        Display_print0(hDisplay, 9, 3, "EXIT");
+        
+    } else if (mystate == 5) {
         Display_clear(hDisplay);
         char str2[20];
         sprintf(str2,"%.1f C", temperature);
@@ -614,16 +799,44 @@ void update_screen() {
         sprintf(str3,"%.0f Pa", pressure);
         Display_print0(hDisplay, 6, 1, "Ilmanpaine:");
         Display_print0(hDisplay, 8, 1, str3);
+        grafiikka_piirto(3);
     } 
-    else if (mystate == 5) {
+    else if (mystate == 6) { 
         Display_clear(hDisplay);
-        if (!GetRXFlag()) {
+        if (viesti_vastaanotto == 0) {
             Display_print0(hDisplay, 3, 0, "EI VASTAANOTETTU");
             Display_print0(hDisplay, 5, 3, "VIESTEJA");
+            grafiikka_piirto(3);
         }
-        else if (GetRXFlag()) {
-        Display_print0(hDisplay, 5, 0, payload1);
+        else if (viesti_vastaanotto == 1) {
+            Display_print0(hDisplay, 5, 0, payload1);
+            viesti_vastaanotto = 0;
+            grafiikka_piirto(3);
         }
+        
+    } else if (mystate == 7) {
+        // Tyhjentää ruudun aiemmasta tekstistä
+        Display_print0(hDisplay, 1, 1, " ");
+        Display_print0(hDisplay, 7, 3, " ");
+        Display_print0(hDisplay, 9, 3, " ");
+        
+        grafiikka_piirto(4);
+        Display_print0(hDisplay, 3, 2, "EXIT?");
+        Display_print0(hDisplay, 5, 1, "o KYLLA   EI");
+        
+        
+        
+    } else if (mystate == 8) {
+        // Tyhjentää ruudun aiemmasta tekstistä
+        Display_print0(hDisplay, 1, 1, " ");
+        Display_print0(hDisplay, 7, 3, " ");
+        Display_print0(hDisplay, 9, 3, " ");
+        
+        grafiikka_piirto(4);
+        Display_print0(hDisplay, 3, 2, "EXIT?");
+        Display_print0(hDisplay, 5, 3, "KYLLA o EI");
+        
+    
     }
 }
 
@@ -631,8 +844,5 @@ void clkFxn(UArg arg0) {
     // Muutetaan tilaa halutuksi
     // Huom! If-lauseella asetetaan, että tilasiirto on mahdollinen 
     // vain jos nykyinen tila on IDLE!
-
-    /*if (mystate == 0) {
-        mystate = 3;
-    }*/
+    
 }
